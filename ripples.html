@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <title>Particle Simulator</title>
+    <meta charset="utf-8" />
+  </head>
+  <body style="margin: 0; background: black">
+    <canvas
+      id="canvas"
+      style="display: block; height: 100vh; width: 100vw"
+    ></canvas>
+    <script>
+      var parameters = {};
+    </script>
+    <script type="x-shader/x-vertex" id="vertex-shader">
+          #version 300 es
+          layout(location=0) in vec3 pos;
+          layout(location=1) in vec3 vel; // which direction to move an how fast
+          layout(location=2) in float birthtime;	// birth time of particle in seconds
+          layout(location=3) in float particle_type; // 0 for launcher, 1 for shell
+
+          layout(location=4) in float randomSeedX; // random seed for this particle
+          layout(location=5) in float randomSeedY; // random seed for this particle
+
+          uniform float time;
+          uniform vec2 cursor;
+          uniform float click;
+          uniform float life;
+
+          out vec3 out_pos;
+          out vec3 out_vel;
+          out float out_birthtime;
+          out float out_particle_type;
+
+          out vec4 color;
+
+          // random noise function (Perlin) taken from https://gist.github.com/patriciogonzalezvivo/670c22f3966e662d2f83?permalink_comment_id=2351862
+          highp float random(vec2 co){
+            highp float a = 12.9898;
+            highp float b = 78.233;
+            highp float c = 43758.5453;
+            highp float dt = dot(co.xy ,vec2(a,b));
+            highp float sn = mod(dt,3.14);
+            return fract(sin(sn) * c);
+          }
+
+
+          void main(void){
+            float age = time - birthtime;
+          	gl_PointSize = 1.5;
+
+            if (particle_type == 0.0) {
+              // launcher particle
+              color = vec4(1.0, 1.0, 1.0, 1.0);
+              if (abs(pos.y - cursor.y) < 0.1) {
+                // kill launcher, launch shell
+                out_particle_type = 1.0;
+                out_pos = pos;
+                float x = randomSeedX * cos(randomSeedX * 3.14159 * 2.0) / 2.0;
+      	        float y = randomSeedX * sin(randomSeedX * 3.14159 * 2.0) / 2.0;
+                out_vel	= vec3(x * .7, y, 1.0);
+                out_birthtime = time; // reset birthday bc now new type of particle
+              } else {
+                // keep the launcher particle alive
+                out_particle_type = 0.0;
+                out_vel	= vel - vec3(0.0,0.02,0.0); // apply gravity? maybe later
+          	    out_pos	= pos + 0.005 * out_vel;
+                out_birthtime = birthtime;
+              }
+            } else {
+              // shell particle
+              color = vec4(abs(randomSeedX) / 5.0, abs(randomSeedY) / 5.0, abs(randomSeedX + randomSeedY) / 5.0, 1.0);
+              color = color * (1.0 - age/life * 3.0);
+              out_particle_type = 1.0;
+              if (age < life) {
+                // shell is alive - update it
+                out_particle_type = 1.0;
+                out_vel	= vel - vec3(0.0,0.005,0.0); // apply gravity
+          	    out_pos	= pos + 0.005 * out_vel;
+                out_birthtime = birthtime;
+              } else {
+                color = vec4(0.0, 0.0, 0.0, 1.0);
+              }
+            }
+          	gl_Position = vec4(out_pos, 1.0);
+          }
+    </script>
+    <script type="x-shader/x-fragment" id="fragment-shader">
+      #version 300 es
+      precision lowp float;
+      in vec4 color;
+      out vec4 outColor;
+      void main() {
+        outColor = color;
+      }
+    </script>
+    <script type="application/javascript" id="boilerplate">
+      "use strict";
+
+      main(parameters);
+
+      function main(param) {
+        const canvas = document.querySelector("#canvas");
+        const gl = canvas.getContext("webgl2");
+
+        param.particleLimit = 10000;
+
+        param.currBuf = 0;
+        param.cursorX = 0;
+        param.cursorY = 0;
+        param.click = false;
+
+        initUI(gl, param);
+      }
+
+      function start(gl, param) {
+        const shaderInfo = initShaders(gl, param.particleLimit); // dict of attr
+        const buffers = initBuffers(gl, shaderInfo, param);
+        drawScene(gl, shaderInfo, buffers, param);
+      }
+
+      // takes care of mouse controls and mouse placement
+      function initUI(gl, param) {
+        function updateCursor(e) {
+          const rect = gl.canvas.getBoundingClientRect();
+          // convert to screen space
+          param.cursorX =
+            ((e.clientX - rect.left) / gl.canvas.clientWidth) * 2 - 1;
+          param.cursorY =
+            (((e.clientY - rect.top) / gl.canvas.clientHeight) * 2 - 1) * -1;
+        }
+        // update the cursor position as we move
+        gl.canvas.addEventListener("pointermove", updateCursor);
+        // capture when the user clicks
+        gl.canvas.addEventListener("pointerdown", function (e) {
+          updateCursor(e);
+          if (e.button === 0) {
+            console.log("click");
+            param.click = true;
+            gl.canvas.setPointerCapture(e.pointerId);
+            start(gl, param);
+          }
+        });
+        // capture when we release the click
+        gl.canvas.addEventListener("pointerup", function (e) {
+          updateCursor(e);
+          if (e.button === 0) {
+            param.click = false;
+            gl.canvas.releasePointerCapture(e.pointerId);
+          }
+        });
+      }
+
+      function initShaders(gl, particleLimit) {
+        const vertexShader = document.getElementById("vertex-shader").text;
+        const fragmentShader = document.getElementById("fragment-shader").text;
+
+        // for transform feedback, what we will be updating
+        const feedbackVars = [
+          "out_pos",
+          "out_vel",
+          "out_birthtime",
+          "out_particle_type",
+        ];
+
+        const shaderProgram = createProgram(
+          gl,
+          vertexShader,
+          fragmentShader,
+          feedbackVars
+        );
+
+        const shaderInfo = {
+          program: shaderProgram,
+          attribs: {
+            pos: gl.getAttribLocation(shaderProgram, "pos"),
+            vel: gl.getAttribLocation(shaderProgram, "vel"),
+            birthtime: gl.getAttribLocation(shaderProgram, "birthtime"),
+            // life: gl.getAttribLocation(shaderProgram, "life"),
+            particle_type: gl.getAttribLocation(shaderProgram, "particle_type"),
+            randomSeedX: gl.getAttribLocation(shaderProgram, "randomSeedX"),
+            randomSeedY: gl.getAttribLocation(shaderProgram, "randomSeedY"),
+          },
+          uniforms: {
+            time: gl.getUniformLocation(shaderProgram, "time"),
+            cursor: gl.getUniformLocation(shaderProgram, "cursor"),
+            click: gl.getUniformLocation(shaderProgram, "click"),
+            life: gl.getUniformLocation(shaderProgram, "life"),
+          },
+        };
+        gl.useProgram(shaderProgram);
+        return shaderInfo;
+      }
+
+      function createShader(gl, type, source) {
+        const shader = gl.createShader(type);
+        gl.shaderSource(shader, source);
+        gl.compileShader(shader);
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+          alert(
+            "An error occurred compiling the shaders: " +
+              gl.getShaderInfoLog(shader)
+          );
+          gl.deleteShader(shader);
+          return null;
+        }
+        return shader;
+      }
+
+      function createProgram(gl, vertexSource, fragmentSource, feedbackVars) {
+        const vertexShader = createShader(
+          gl,
+          gl.VERTEX_SHADER,
+          vertexSource.trim()
+        );
+        const fragmentShader = createShader(
+          gl,
+          gl.FRAGMENT_SHADER,
+          fragmentSource.trim()
+        );
+        const shaderProgram = gl.createProgram();
+        gl.attachShader(shaderProgram, vertexShader);
+        gl.attachShader(shaderProgram, fragmentShader);
+        gl.transformFeedbackVaryings(
+          shaderProgram,
+          feedbackVars,
+          gl.SEPARATE_ATTRIBS
+        );
+        gl.linkProgram(shaderProgram);
+
+        if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+          alert(
+            "Unable to initialize the shader program: " +
+              gl.getProgramInfoLog(shaderProgram)
+          );
+          return null;
+        }
+        return shaderProgram;
+      }
+
+      // buffers for every attr from shaderInfo dict
+      function initBuffers(gl, shaderInfo, param) {
+        var vao = [gl.createVertexArray(), gl.createVertexArray()];
+        var transformFeedback = [
+          gl.createTransformFeedback(),
+          gl.createTransformFeedback(),
+        ];
+
+        var initialVelocity = new Float32Array(param.particleLimit * 3);
+        var initialPos = new Float32Array(param.particleLimit * 3);
+        var birthTime = new Float32Array(param.particleLimit);
+        // var life = new Float32Array(param.particleLimit)
+        var particle_type = new Float32Array(param.particleLimit);
+        var randomSeedX = new Float32Array(param.particleLimit);
+        var randomSeedY = new Float32Array(param.particleLimit);
+
+        for (var i = 0; i < param.particleLimit; i++) {
+          initialPos[i * 3] = param.cursorX;
+          initialPos[i * 3 + 1] = param.cursorY;
+          initialPos[i * 3 + 2] = 0;
+          initialVelocity[i * 3] = 0;
+          initialVelocity[i * 3 + 1] = 5;
+          initialVelocity[i * 3 + 2] = 0;
+          birthTime[i] = performance.now();
+          // life[i] = (Math.random() * 2000) + 3000;
+          particle_type[i] = 0.0;
+          randomSeedX[i] = (Math.random() * 2 - 1) * 5;
+          randomSeedY[i] = (Math.random() * 2 - 1) * 5;
+          console.log(randomSeedX[i], randomSeedY[i]);
+        }
+
+        var v = [null, null];
+        // loop through each of our state buffers
+        for (var i = 0; i < 2; i++) {
+          v[i] = {
+            pos: gl.createBuffer(),
+            vel: gl.createBuffer(),
+            birthtime: gl.createBuffer(),
+            // life: gl.createBuffer(),
+            particle_type: gl.createBuffer(),
+            randomSeedX: gl.createBuffer(),
+            randomSeedY: gl.createBuffer(),
+          };
+
+          gl.bindVertexArray(vao[i]);
+
+          gl.bindBuffer(gl.ARRAY_BUFFER, v[i].pos);
+          gl.bufferData(gl.ARRAY_BUFFER, initialPos, gl.DYNAMIC_COPY);
+          gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+          gl.enableVertexAttribArray(0);
+
+          gl.bindBuffer(gl.ARRAY_BUFFER, v[i].vel);
+          gl.bufferData(gl.ARRAY_BUFFER, initialVelocity, gl.DYNAMIC_COPY);
+          gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
+          gl.enableVertexAttribArray(1);
+
+          gl.bindBuffer(gl.ARRAY_BUFFER, v[i].birthtime);
+          gl.bufferData(gl.ARRAY_BUFFER, birthTime, gl.DYNAMIC_COPY);
+          gl.vertexAttribPointer(2, 1, gl.FLOAT, false, 0, 0);
+          gl.enableVertexAttribArray(2);
+
+          // gl.bindBuffer(gl.ARRAY_BUFFER, v[i].life);
+          // gl.bufferData(gl.ARRAY_BUFFER, life, gl.DYNAMIC_COPY);
+          // gl.vertexAttribPointer(3, 1, gl.FLOAT, false, 0, 0);
+          // gl.enableVertexAttribArray(3);
+
+          gl.bindBuffer(gl.ARRAY_BUFFER, v[i].particle_type);
+          gl.bufferData(gl.ARRAY_BUFFER, particle_type, gl.DYNAMIC_COPY);
+          gl.vertexAttribPointer(3, 1, gl.FLOAT, false, 0, 0);
+          gl.enableVertexAttribArray(3);
+
+          gl.bindBuffer(gl.ARRAY_BUFFER, v[i].randomSeedX);
+          gl.bufferData(gl.ARRAY_BUFFER, randomSeedX, gl.DYNAMIC_COPY);
+          gl.vertexAttribPointer(4, 1, gl.FLOAT, false, 0, 0);
+          gl.enableVertexAttribArray(4);
+
+          gl.bindBuffer(gl.ARRAY_BUFFER, v[i].randomSeedY);
+          gl.bufferData(gl.ARRAY_BUFFER, randomSeedY, gl.DYNAMIC_COPY);
+          gl.vertexAttribPointer(5, 1, gl.FLOAT, false, 0, 0);
+          gl.enableVertexAttribArray(5);
+
+          gl.bindBuffer(gl.ARRAY_BUFFER, null);
+
+          gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, transformFeedback[i]);
+          gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 0, v[i].pos);
+          gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 1, v[i].vel);
+          gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 2, v[i].birthtime);
+          // gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 3, v[i].life);
+          gl.bindBufferBase(
+            gl.TRANSFORM_FEEDBACK_BUFFER,
+            3,
+            v[i].particle_type
+          );
+
+          gl.bindVertexArray(null);
+        }
+
+        return {
+          vao: vao,
+          transformFeedback: transformFeedback,
+        };
+      }
+
+      function drawScene(gl, shaderInfo, buffers, param) {
+        // this function will call itself in a loop forever.
+        gl.clearColor(0.0, 0.0, 0.0, 1.0);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+
+        gl.uniform1f(shaderInfo.uniforms.time, performance.now());
+
+        gl.uniform1f(shaderInfo.uniforms.life, 8000.0);
+
+        var idx = (param.currBuf + 1) % 2; //Alternate between VAOs
+        var vaoSource = buffers.vao[param.currBuf];
+        var transformFeedback = buffers.transformFeedback[idx];
+
+        gl.bindVertexArray(vaoSource);
+        gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, transformFeedback);
+
+        gl.beginTransformFeedback(gl.POINTS);
+        gl.drawArrays(gl.POINTS, 0, param.particleLimit);
+        gl.endTransformFeedback();
+
+        const fence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+        gl.flush();
+        function readShaderOutput(timestamp) {
+          const status = gl.clientWaitSync(fence, 0, 0);
+          if (
+            status === gl.CONDITION_SATISFIED ||
+            status === gl.ALREADY_SIGNALED
+          ) {
+            gl.deleteSync(fence);
+            param.currBuf = idx; //Alternate between the VAOs
+            // update time uniform
+            gl.uniform1f(shaderInfo.uniforms.time, performance.now());
+            // update cursor uniform
+            gl.uniform2fv(shaderInfo.uniforms.cursor, [
+              param.cursorX,
+              param.cursorY,
+            ]);
+            // update click uniform
+            gl.uniform1f(shaderInfo.uniforms.click, param.click ? 1.0 : 0.0);
+            drawScene(gl, shaderInfo, buffers, param);
+          } else window.requestAnimationFrame(readShaderOutput);
+        }
+        window.requestAnimationFrame(readShaderOutput);
+      }
+    </script>
+  </body>
+</html>
